@@ -1,0 +1,33 @@
+# Operating System Files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDE and Editor Files
+.idea/
+*.iml
+.vscode/
+*.swp
+*.swo
+
+# Tools and local binaries
+.tools/
+
+# Environment Variables & Secrets
+.env
+.env.*
+!.env.example
+
+# Backend Build & Dependencies
+backend/target/
+backend/.mvn/wrapper/maven-wrapper.jar
+backend/*.log
+
+# Frontend Dependencies & Build Output
+frontend/node_modules/
+frontend/dist/
+frontend/dist-ssr/
+frontend/*.log
+
+# Infrastructure Runtime / Persistent Data
+infrastructure/*.log

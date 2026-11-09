@@ -1,0 +1,6 @@
+# Local environment files
+.env
+.env.local
+
+# Docker volume mounts / runtime files
+*.log

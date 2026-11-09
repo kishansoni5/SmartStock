@@ -1,0 +1,61 @@
+server:
+  port: ${SERVER_PORT:8080}
+  servlet:
+    context-path: /api/v1
+
+spring:
+  application:
+    name: smartstock-backend
+
+  # Database Configuration (MySQL)
+  datasource:
+    url: jdbc:mysql://${DB_HOST:localhost}:${DB_PORT:3306}/${DB_NAME:smartstock}?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC
+    username: ${DB_USERNAME:smartstock_user}
+    password: ${DB_PASSWORD:smartstock_pass}
+    driver-class-name: com.mysql.cj.jdbc.Driver
+
+  # JPA & Hibernate Configuration
+  jpa:
+    hibernate:
+      ddl-auto: ${JPA_DDL_AUTO:validate}
+    show-sql: ${SHOW_SQL:false}
+    properties:
+      hibernate:
+        format_sql: false
+        dialect: org.hibernate.dialect.MySQLDialect
+    open-in-view: false
+
+  # Apache Kafka Configuration
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.springframework.kafka.support.serializer.JsonSerializer
+      acks: all
+      retries: 3
+    consumer:
+      group-id: ${KAFKA_CONSUMER_GROUP:smartstock-group}
+      auto-offset-reset: earliest
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.springframework.kafka.support.serializer.JsonDeserializer
+      properties:
+        spring.json.trusted.packages: "com.smartstock.*"
+
+# Security & JWT Configuration
+smartstock:
+  jwt:
+    secret: ${JWT_SECRET:your_secure_256_bit_secret_key_must_be_set_in_environment_variables}
+    expiration-ms: ${JWT_EXPIRATION_MS:86400000} # 24 hours
+  kafka:
+    topics:
+      order-created: order.created.v1
+      inventory-reserved: inventory.reserved.v1
+      inventory-released: inventory.released.v1
+
+# Logging Configuration
+logging:
+  level:
+    root: INFO
+    com.smartstock: DEBUG
+    org.springframework.security: INFO
+    org.springframework.kafka: INFO
