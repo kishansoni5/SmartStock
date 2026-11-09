@@ -2,12 +2,14 @@
 
 ## 1. Storage Philosophy
 
-SmartStock operates on a single MySQL 8.0 relational database instance while enforcing **logical domain isolation** across modules. 
+SmartStock operates on a single MySQL 8.0 relational database instance supporting a **Modular Monolith** architecture with **Event-Driven Order Processing**.
 
 Key principles:
-- **Zero Cross-Module Hard Foreign Keys:** While internal module relationships (e.g., `orders` to `order_items`) use relational foreign keys with cascading options, tables from different bounded contexts (e.g., `orders` referencing `products`) maintain loose coupling by referencing IDs only as indexed scalar columns (`product_id BIGINT`).
-- **Data Integrity:** Handled by ACID transactions within individual module operations and eventual consistency via Kafka events across boundaries.
-- **Auditability:** Core tables include standard audit fields (`created_at`, `updated_at`, `version`).
+- **Flyway-Led Schema Management:** All database schema changes are strictly version-controlled through Flyway migration scripts (`src/main/resources/db/migration/V1__initial_schema.sql`).
+- **Hibernate Schema Validation:** `spring.jpa.hibernate.ddl-auto` is set to `validate`. Hibernate never modifies database tables at runtime; it validates that JPA entity mappings strictly match the underlying schema.
+- **Relational Integrity:** Foreign keys enforce referential integrity across modules while avoiding cascading deletes across aggregate roots (cascading deletes are strictly restricted to `orders -> order_items`).
+- **Auditability & Concurrency:** Core domain tables include timestamp auditing (`created_at`, `updated_at`). High-contention inventory tables employ optimistic locking (`version`).
+- **Idempotency & Reliability:** Dedicated tables for the Transactional Outbox pattern (`outbox_events`) and Kafka consumer deduplication (`processed_events`).
 
 ---
 
@@ -15,223 +17,303 @@ Key principles:
 
 ```mermaid
 erDiagram
-    USERS ||--o{ USER_ROLES : has
-    ROLES ||--o{ USER_ROLES : assigned_to
+    APP_USERS ||--o{ ORDERS : "places (1:N)"
+    CATEGORIES ||--o{ PRODUCTS : "categorizes (1:N)"
+    PRODUCTS ||--o{ INVENTORIES : "stocked_in (1:N)"
+    WAREHOUSES ||--o{ INVENTORIES : "houses (1:N)"
+    ORDERS ||--|{ ORDER_ITEMS : "contains (1:N)"
+    PRODUCTS ||--o{ ORDER_ITEMS : "item_product (1:N)"
+    WAREHOUSES ||--o{ ORDERS : "fulfills (1:N, nullable)"
 
-    PRODUCTS ||--|| INVENTORY_STOCKS : tracks
-    PRODUCTS ||--o{ INVENTORY_TRANSACTIONS : logs
-
-    ORDERS ||--|{ ORDER_ITEMS : contains
-    ORDERS ||--o{ OUTBOX_EVENTS : triggers
-
-    USERS {
+    APP_USERS {
         bigint id PK
+        varchar name
         varchar email UK
-        varchar password_hash
-        varchar full_name
-        varchar status
-        datetime created_at
-        datetime updated_at
+        varchar password
+        varchar role "CUSTOMER | ADMIN"
+        timestamp created_at
+        timestamp updated_at
     }
 
-    ROLES {
+    CATEGORIES {
         bigint id PK
         varchar name UK
-    }
-
-    USER_ROLES {
-        bigint user_id PK,FK
-        bigint role_id PK,FK
+        text description
+        timestamp created_at
     }
 
     PRODUCTS {
         bigint id PK
-        varchar sku UK
         varchar name
+        varchar sku UK
         text description
-        decimal unit_price
-        varchar category
-        boolean is_active
-        datetime created_at
-        datetime updated_at
+        decimal price
+        bigint category_id FK
+        boolean active
+        timestamp created_at
+        timestamp updated_at
     }
 
-    INVENTORY_STOCKS {
+    WAREHOUSES {
         bigint id PK
-        bigint product_id UK
-        int available_quantity
-        int reserved_quantity
-        int reorder_threshold
+        varchar name
+        varchar location
+        timestamp created_at
+    }
+
+    INVENTORIES {
+        bigint id PK
+        bigint product_id FK,UK
+        bigint warehouse_id FK,UK
+        int on_hand
+        int reserved
         bigint version "Optimistic Locking"
-        datetime updated_at
-    }
-
-    INVENTORY_TRANSACTIONS {
-        bigint id PK
-        bigint product_id
-        varchar transaction_type "RESERVE | RELEASE | DEDUCT | RESTOCK"
-        int quantity
-        varchar reference_id "e.g. order_id"
-        datetime created_at
+        timestamp updated_at
     }
 
     ORDERS {
         bigint id PK
-        varchar order_number UK
-        bigint customer_id
-        varchar status "PENDING | CONFIRMED | CANCELLED | SHIPPED"
+        bigint user_id FK
+        varchar status "PENDING | CONFIRMED | REJECTED | CANCELLED"
         decimal total_amount
-        datetime created_at
-        datetime updated_at
+        bigint warehouse_id FK "nullable until reserved"
+        timestamp created_at
+        timestamp updated_at
     }
 
     ORDER_ITEMS {
         bigint id PK
         bigint order_id FK
-        bigint product_id
+        bigint product_id FK
         int quantity
-        decimal unit_price
-        decimal subtotal
+        decimal unit_price "Snapshot price at order time"
+    }
+
+    PROCESSED_EVENTS {
+        bigint id PK
+        varchar event_id UK
+        varchar event_type
+        timestamp processed_at
     }
 
     OUTBOX_EVENTS {
-        varchar id PK
-        varchar aggregate_type
+        bigint id PK
+        varchar event_id UK
         varchar aggregate_id
         varchar event_type
-        json payload
+        text payload
         varchar status "PENDING | PUBLISHED | FAILED"
-        datetime created_at
-        datetime published_at
+        timestamp created_at
+        timestamp published_at
+        int attempts
     }
 ```
 
 ---
 
-## 3. Detailed Table Specifications
+## 3. Detailed Specifications for the Nine Tables
 
-### A. Authentication Module
+### 1. `app_users` (Authentication & Identity Module)
+Stores customer and administrator profiles, credentials, and roles.
 
-#### `users`
 | Column | Type | Constraints | Description |
 | :--- | :--- | :--- | :--- |
 | `id` | `BIGINT AUTO_INCREMENT` | `PRIMARY KEY` | Unique user identifier |
-| `email` | `VARCHAR(150)` | `NOT NULL, UNIQUE` | User login email |
-| `password_hash` | `VARCHAR(255)` | `NOT NULL` | BCrypt encrypted password hash |
-| `full_name` | `VARCHAR(100)` | `NOT NULL` | Display name |
-| `status` | `VARCHAR(30)` | `NOT NULL, DEFAULT 'ACTIVE'` | Account status (`ACTIVE`, `SUSPENDED`) |
-| `created_at` | `DATETIME(6)` | `NOT NULL` | Audit timestamp |
-| `updated_at` | `DATETIME(6)` | `NOT NULL` | Audit timestamp |
-
-#### `roles` & `user_roles`
-Standard RBAC supporting roles such as `ROLE_ADMIN`, `ROLE_WAREHOUSE_MANAGER`, `ROLE_CUSTOMER`.
+| `name` | `VARCHAR(100)` | `NOT NULL` | Full name of the user |
+| `email` | `VARCHAR(150)` | `NOT NULL, UNIQUE` | Unique login email |
+| `password` | `VARCHAR(255)` | `NOT NULL` | BCrypt-hashed password |
+| `role` | `VARCHAR(20)` | `NOT NULL` | Role: `CUSTOMER`, `ADMIN` |
+| `created_at` | `TIMESTAMP` | `NOT NULL, DEFAULT CURRENT_TIMESTAMP` | Account creation timestamp |
+| `updated_at` | `TIMESTAMP` | `NOT NULL, DEFAULT CURRENT_TIMESTAMP` | Last profile update timestamp |
 
 ---
 
-### B. Inventory Module
+### 2. `categories` (Inventory Module)
+Product hierarchy and groupings for catalog organization.
 
-#### `products`
 | Column | Type | Constraints | Description |
 | :--- | :--- | :--- | :--- |
-| `id` | `BIGINT AUTO_INCREMENT` | `PRIMARY KEY` | Product ID |
-| `sku` | `VARCHAR(60)` | `NOT NULL, UNIQUE` | Stock Keeping Unit |
-| `name` | `VARCHAR(200)` | `NOT NULL` | Product name |
-| `description` | `TEXT` | `NULL` | Product specifications |
-| `unit_price` | `DECIMAL(12, 2)` | `NOT NULL` | Current selling price |
-| `category` | `VARCHAR(60)` | `NOT NULL` | Classification category |
-| `is_active` | `BOOLEAN` | `NOT NULL, DEFAULT TRUE` | Soft-deletion flag |
-| `created_at` | `DATETIME(6)` | `NOT NULL` | Creation timestamp |
-| `updated_at` | `DATETIME(6)` | `NOT NULL` | Last modification timestamp |
-
-#### `inventory_stocks`
-| Column | Type | Constraints | Description |
-| :--- | :--- | :--- | :--- |
-| `id` | `BIGINT AUTO_INCREMENT` | `PRIMARY KEY` | Record identifier |
-| `product_id` | `BIGINT` | `NOT NULL, UNIQUE` | Reference to product |
-| `available_quantity` | `INT` | `NOT NULL, CHECK (>= 0)` | Stock ready for reservation |
-| `reserved_quantity` | `INT` | `NOT NULL, CHECK (>= 0)` | Stock held for pending orders |
-| `reorder_threshold` | `INT` | `NOT NULL, DEFAULT 10` | Low stock notification limit |
-| `version` | `BIGINT` | `NOT NULL, DEFAULT 0` | JPA `@Version` optimistic lock counter |
-| `updated_at` | `DATETIME(6)` | `NOT NULL` | Last stock adjustment timestamp |
-
-#### `inventory_transactions`
-Audit log recording every stock change with trace identifiers (e.g. which order caused deduction).
+| `id` | `BIGINT AUTO_INCREMENT` | `PRIMARY KEY` | Category identifier |
+| `name` | `VARCHAR(100)` | `NOT NULL, UNIQUE` | Unique category name |
+| `description` | `TEXT` | `NULL` | Optional category description |
+| `created_at` | `TIMESTAMP` | `NOT NULL, DEFAULT CURRENT_TIMESTAMP` | Creation timestamp |
 
 ---
 
-### C. Order Module
+### 3. `products` (Inventory Module)
+Master product catalog containing SKUs, descriptions, and current listing prices.
 
-#### `orders`
 | Column | Type | Constraints | Description |
 | :--- | :--- | :--- | :--- |
-| `id` | `BIGINT AUTO_INCREMENT` | `PRIMARY KEY` | Internal ID |
-| `order_number` | `VARCHAR(64)` | `NOT NULL, UNIQUE` | Public tracking number (e.g., `ORD-20261108-XYZ`) |
-| `customer_id` | `BIGINT` | `NOT NULL` | Reference to `users.id` |
-| `status` | `VARCHAR(40)` | `NOT NULL` | State: `PENDING`, `CONFIRMED`, `CANCELLED`, `COMPLETED` |
-| `total_amount` | `DECIMAL(12, 2)` | `NOT NULL` | Aggregated total price |
-| `created_at` | `DATETIME(6)` | `NOT NULL` | Timestamp |
-| `updated_at` | `DATETIME(6)` | `NOT NULL` | Timestamp |
+| `id` | `BIGINT AUTO_INCREMENT` | `PRIMARY KEY` | Unique product identifier |
+| `name` | `VARCHAR(150)` | `NOT NULL` | Product commercial name |
+| `sku` | `VARCHAR(50)` | `NOT NULL, UNIQUE` | Stock Keeping Unit |
+| `description` | `TEXT` | `NULL` | Specifications & details |
+| `price` | `DECIMAL(12, 2)` | `NOT NULL, CHECK (price >= 0)` | Current catalog price |
+| `category_id` | `BIGINT` | `NOT NULL, FK to categories(id)` | Associated category |
+| `active` | `BOOLEAN` | `NOT NULL, DEFAULT TRUE` | Active/inactive visibility flag |
+| `created_at` | `TIMESTAMP` | `NOT NULL, DEFAULT CURRENT_TIMESTAMP` | Creation timestamp |
+| `updated_at` | `TIMESTAMP` | `NOT NULL, DEFAULT CURRENT_TIMESTAMP` | Last updated timestamp |
 
-#### `order_items`
+---
+
+### 4. `warehouses` (Inventory Module)
+Physical warehouse locations where physical stock is maintained.
+
+| Column | Type | Constraints | Description |
+| :--- | :--- | :--- | :--- |
+| `id` | `BIGINT AUTO_INCREMENT` | `PRIMARY KEY` | Warehouse identifier |
+| `name` | `VARCHAR(100)` | `NOT NULL` | Warehouse name |
+| `location` | `VARCHAR(200)` | `NOT NULL` | City, address, or geographic hub |
+| `created_at` | `TIMESTAMP` | `NOT NULL, DEFAULT CURRENT_TIMESTAMP` | Facility registration timestamp |
+
+---
+
+### 5. `inventories` (Inventory Module)
+Tracks multi-warehouse stock levels for products. Models the Many-to-Many relationship between `products` and `warehouses`.
+
+| Column | Type | Constraints | Description |
+| :--- | :--- | :--- | :--- |
+| `id` | `BIGINT AUTO_INCREMENT` | `PRIMARY KEY` | Inventory record identifier |
+| `product_id` | `BIGINT` | `NOT NULL, FK to products(id)` | Associated product |
+| `warehouse_id` | `BIGINT` | `NOT NULL, FK to warehouses(id)` | Associated warehouse |
+| `on_hand` | `INT` | `NOT NULL, DEFAULT 0, CHECK (on_hand >= 0)` | Total physical units in warehouse |
+| `reserved` | `INT` | `NOT NULL, DEFAULT 0, CHECK (reserved >= 0)` | Units locked for pending orders |
+| `version` | `BIGINT` | `NOT NULL, DEFAULT 0` | JPA `@Version` optimistic locking counter |
+| `updated_at` | `TIMESTAMP` | `NOT NULL, DEFAULT CURRENT_TIMESTAMP` | Last stock adjustment timestamp |
+
+> [!IMPORTANT]
+> **Stock Calculation Rule:** Available stock is strictly computed as:
+> $$\text{available} = \text{on\_hand} - \text{reserved}$$
+> To prevent synchronization drift and anomalies, `available` is **not** stored as a separate database column. It is exposed dynamically in the `Inventory` entity via `getAvailable()`.
+> 
+> **Integrity Constraint:** An explicit check constraint `chk_inventories_reserved_on_hand` enforces `reserved <= on_hand` at the database level.
+> 
+> **Uniqueness:** A composite unique constraint `uk_inventories_product_warehouse (product_id, warehouse_id)` ensures a product appears at most once per warehouse.
+
+---
+
+### 6. `orders` (Order Module)
+Tracks customer purchase orders and their lifecycle state machine.
+
+| Column | Type | Constraints | Description |
+| :--- | :--- | :--- | :--- |
+| `id` | `BIGINT AUTO_INCREMENT` | `PRIMARY KEY` | Internal order identifier |
+| `user_id` | `BIGINT` | `NOT NULL, FK to app_users(id)` | Customer placing the order |
+| `status` | `VARCHAR(20)` | `NOT NULL` | `PENDING`, `CONFIRMED`, `REJECTED`, `CANCELLED` |
+| `total_amount` | `DECIMAL(12, 2)` | `NOT NULL, DEFAULT 0.00, CHECK (total_amount >= 0)` | Order monetary total |
+| `warehouse_id` | `BIGINT` | `NULL, FK to warehouses(id)` | Warehouse allocated for fulfillment |
+| `created_at` | `TIMESTAMP` | `NOT NULL, DEFAULT CURRENT_TIMESTAMP` | Order placement timestamp |
+| `updated_at` | `TIMESTAMP` | `NOT NULL, DEFAULT CURRENT_TIMESTAMP` | State transition timestamp |
+
+> [!NOTE]
+> `warehouse_id` is intentionally nullable upon initial order creation (`PENDING`). It is populated once the asynchronous Kafka inventory reservation listener resolves the optimal warehouse facility.
+
+---
+
+### 7. `order_items` (Order Module)
+Itemized lines within an order.
+
 | Column | Type | Constraints | Description |
 | :--- | :--- | :--- | :--- |
 | `id` | `BIGINT AUTO_INCREMENT` | `PRIMARY KEY` | Line item identifier |
-| `order_id` | `BIGINT` | `NOT NULL, FK to orders(id)` | Order association |
-| `product_id` | `BIGINT` | `NOT NULL` | Product identifier reference |
-| `quantity` | `INT` | `NOT NULL, CHECK (> 0)` | Quantity ordered |
-| `unit_price` | `DECIMAL(12, 2)` | `NOT NULL` | Snapshot price at checkout time |
-| `subtotal` | `DECIMAL(12, 2)` | `NOT NULL` | `quantity * unit_price` |
+| `order_id` | `BIGINT` | `NOT NULL, FK to orders(id) ON DELETE CASCADE` | Associated order |
+| `product_id` | `BIGINT` | `NOT NULL, FK to products(id)` | Purchased product |
+| `quantity` | `INT` | `NOT NULL, CHECK (quantity > 0)` | Number of units ordered |
+| `unit_price` | `DECIMAL(12, 2)` | `NOT NULL, CHECK (unit_price >= 0)` | Snapshot price at checkout time |
+
+> [!IMPORTANT]
+> `unit_price` captures the exact price snapshot at checkout time. Future price adjustments in `products.price` do not alter historical order line items or invoices.
 
 ---
 
-### D. Event Infrastructure (Transactional Outbox Pattern)
+### 8. `processed_events` (Common Event Module)
+Provides consumer idempotency for Kafka event processing.
 
-#### `outbox_events`
-Solves the dual-write problem (writing to DB and publishing to Kafka reliably).
 | Column | Type | Constraints | Description |
 | :--- | :--- | :--- | :--- |
-| `id` | `VARCHAR(36)` | `PRIMARY KEY` | UUID event ID |
-| `aggregate_type` | `VARCHAR(80)` | `NOT NULL` | E.g. `Order`, `Inventory` |
-| `aggregate_id` | `VARCHAR(80)` | `NOT NULL` | Primary entity ID |
-| `event_type` | `VARCHAR(100)` | `NOT NULL` | E.g. `OrderCreatedEvent` |
-| `payload` | `JSON` | `NOT NULL` | Full serialized event payload |
-| `status` | `VARCHAR(20)` | `NOT NULL` | `PENDING`, `PUBLISHED`, `FAILED` |
-| `created_at` | `DATETIME(6)` | `NOT NULL` | Event creation timestamp |
-| `published_at` | `DATETIME(6)` | `NULL` | Kafka dispatch confirmation timestamp |
+| `id` | `BIGINT AUTO_INCREMENT` | `PRIMARY KEY` | Record identifier |
+| `event_id` | `VARCHAR(100)` | `NOT NULL, UNIQUE` | Unique Kafka event UUID |
+| `event_type` | `VARCHAR(100)` | `NOT NULL` | Class or type of event (e.g. `OrderCreatedEvent`) |
+| `processed_at` | `TIMESTAMP` | `NOT NULL, DEFAULT CURRENT_TIMESTAMP` | Timestamp of successful consumption |
 
 ---
 
-## 4. Concurrency & Race Condition Strategy
+### 9. `outbox_events` (Common Event Module)
+Implements the Transactional Outbox pattern to guarantee at-least-once message delivery to Kafka without distributed two-phase commit transactions.
 
-During high-concurrency order surges (e.g., flash sales), multiple requests may attempt to reserve stock for the same SKU simultaneously.
+| Column | Type | Constraints | Description |
+| :--- | :--- | :--- | :--- |
+| `id` | `BIGINT AUTO_INCREMENT` | `PRIMARY KEY` | Outbox record identifier |
+| `event_id` | `VARCHAR(36)` | `NOT NULL, UNIQUE` | UUID identifying the event |
+| `aggregate_id` | `VARCHAR(100)` | `NOT NULL` | ID of domain aggregate root (e.g., `order_id`) |
+| `event_type` | `VARCHAR(100)` | `NOT NULL` | Domain event type name |
+| `payload` | `TEXT` | `NOT NULL` | Serialized JSON event body |
+| `status` | `VARCHAR(20)` | `NOT NULL, DEFAULT 'PENDING'` | State: `PENDING`, `PUBLISHED`, `FAILED` |
+| `created_at` | `TIMESTAMP` | `NOT NULL, DEFAULT CURRENT_TIMESTAMP` | Transaction creation timestamp |
+| `published_at` | `TIMESTAMP` | `NULL` | Kafka dispatch timestamp |
+| `attempts` | `INT` | `NOT NULL, DEFAULT 0` | Dispatch retry counter |
 
-### Strategy Comparison for Interviews:
+---
+
+## 4. Database Constraints & Indexing Strategy
+
+### A. Constraints Summary
+
+| Constraint Name | Table | Type | Expression / Target Columns |
+| :--- | :--- | :--- | :--- |
+| `PRIMARY KEY` | All 9 tables | PK | `id` (`BIGINT AUTO_INCREMENT`) |
+| `uk_app_users_email` | `app_users` | Unique | `email` |
+| `uk_categories_name` | `categories` | Unique | `name` |
+| `uk_products_sku` | `products` | Unique | `sku` |
+| `uk_inventories_product_warehouse` | `inventories` | Unique | `(product_id, warehouse_id)` |
+| `uk_processed_events_event_id` | `processed_events` | Unique | `event_id` |
+| `uk_outbox_events_event_id` | `outbox_events` | Unique | `event_id` |
+| `chk_products_price` | `products` | Check | `price >= 0` |
+| `chk_inventories_on_hand` | `inventories` | Check | `on_hand >= 0` |
+| `chk_inventories_reserved` | `inventories` | Check | `reserved >= 0` |
+| `chk_inventories_reserved_on_hand` | `inventories` | Check | `reserved <= on_hand` |
+| `chk_orders_total_amount` | `orders` | Check | `total_amount >= 0` |
+| `chk_order_items_quantity` | `order_items` | Check | `quantity > 0` |
+| `chk_order_items_unit_price` | `order_items` | Check | `unit_price >= 0` |
+
+### B. Indexes Summary
+
+| Index Name | Table | Target Columns | Purpose |
+| :--- | :--- | :--- | :--- |
+| `idx_products_category_id` | `products` | `category_id` | Fast product lookups by category |
+| `idx_products_sku` | `products` | `sku` | Point lookups during barcode / checkout scans |
+| `idx_inventories_product_id` | `inventories` | `product_id` | Stock queries for a given product |
+| `idx_inventories_warehouse_id`| `inventories` | `warehouse_id` | Stock audits for a specific warehouse |
+| `idx_orders_user_id` | `orders` | `user_id` | Customer order history lookups |
+| `idx_orders_status` | `orders` | `status` | Operational dashboards filtering pending/confirmed orders |
+| `idx_orders_warehouse_id` | `orders` | `warehouse_id` | Fulfillment queues per warehouse |
+| `idx_order_items_order_id` | `order_items` | `order_id` | Retrieving itemized lines for an order |
+| `idx_order_items_product_id` | `order_items` | `product_id` | Finding order history for a product |
+| `idx_processed_events_event_id`| `processed_events` | `event_id` | Low-latency idempotency checks in Kafka listeners |
+| `idx_outbox_events_status` | `outbox_events` | `status` | High-frequency polling of `PENDING` outbox records |
+| `idx_outbox_events_event_id` | `outbox_events` | `event_id` | Outbox lookups by event UUID |
+
+---
+
+## 5. Concurrency & Locking Strategy
+
+During flash-sale conditions, multiple customer transactions may compete for available stock of the same product. SmartStock uses a layered concurrency model:
+
+```mermaid
+flowchart TD
+    Req["Order Placement Request"] --> Read["Read Stock: on_hand, reserved, version"]
+    Read --> Check{"(on_hand - reserved) >= requested_qty?"}
+    Check -- No --> Reject["Reject / Publish InventoryDepletedEvent"]
+    Check -- Yes --> Update["UPDATE inventories SET reserved = reserved + :qty, version = version + 1 WHERE id = :id AND version = :version"]
+    Update --> Success{"Rows Affected == 1?"}
+    Success -- Yes --> Confirm["Publish InventoryReservedEvent"]
+    Success -- No --> Retry["OptimisticLockException -> Fast Retry or Backoff"]
+```
 
 1. **Optimistic Locking (`@Version`):**
-   - Implemented via `version` column in `inventory_stocks`.
-   - Before updating: `UPDATE inventory_stocks SET available_quantity = available_quantity - :qty, version = version + 1 WHERE id = :id AND version = :version`.
-   - **Best for:** Read-heavy catalogs with low-to-medium contention. Fails fast with `OptimisticLockException` which can trigger retries.
-
-2. **Pessimistic Locking (`SELECT ... FOR UPDATE`):**
-   - Implemented via Spring Data JPA `@Lock(LockModeType.PESSIMISTIC_WRITE)`.
-   - Acquires row-level exclusive lock in MySQL InnoDB.
-   - **Best for:** Extremely high contention items where retries would waste resources.
-
-3. **Atomic Database Decrement:**
-   ```sql
-   UPDATE inventory_stocks
-   SET available_quantity = available_quantity - :qty,
-       reserved_quantity = reserved_quantity + :qty
-   WHERE product_id = :productId AND available_quantity >= :qty;
-   ```
-   - Checks inventory directly in the database lock without keeping transactions open. Returns rows affected (`1` = success, `0` = out of stock).
-
----
-
-## 5. Indexing & Optimization Strategy
-
-- **`products.sku`:** Unique B-Tree index for instant SKU lookup during barcode scanning and inventory lookups.
-- **`inventory_stocks.product_id`:** Unique index ensuring 1:1 stock record per product.
-- **`orders(customer_id, created_at DESC)`:** Composite index for retrieving a user's recent order history.
-- **`orders(status)`:** Filter index for operational dashboards finding pending orders.
-- **`outbox_events(status, created_at)`:** Composite index allowing outbox poller to quickly fetch pending events in batch.
+   - Implemented via `inventories.version`.
+   - Hibernate automatically includes `WHERE version = :version` on updates.
+   - If a concurrent transaction modified stock first, Hibernate throws `OptimisticLockException`, preventing race conditions and phantom over-allocations.
+2. **Database Check Constraints:**
+   - Even in edge cases where application-level locks are bypassed, MySQL enforces `chk_inventories_reserved_on_hand` (`reserved <= on_hand`), guaranteeing negative stock is physically impossible at the storage engine level.

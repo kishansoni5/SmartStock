@@ -20,5 +20,6 @@ spring:
 
 smartstock:
   jwt:
+    # Test-only 256-bit secret used strictly for isolated automated unit and integration tests
     secret: 404E635266556A586E3272357538782F413F4428472B4B6250645367566B5970
     expiration-ms: 3600000

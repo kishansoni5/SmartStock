@@ -44,7 +44,7 @@ spring:
 # Security & JWT Configuration
 smartstock:
   jwt:
-    secret: ${JWT_SECRET:your_secure_256_bit_secret_key_must_be_set_in_environment_variables}
+    secret: ${JWT_SECRET}
     expiration-ms: ${JWT_EXPIRATION_MS:86400000} # 24 hours
   kafka:
     topics:
