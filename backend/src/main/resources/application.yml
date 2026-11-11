@@ -30,16 +30,18 @@ spring:
     bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
     producer:
       key-serializer: org.apache.kafka.common.serialization.StringSerializer
-      value-serializer: org.springframework.kafka.support.serializer.JsonSerializer
+      value-serializer: org.apache.kafka.common.serialization.StringSerializer
       acks: all
       retries: 3
     consumer:
       group-id: ${KAFKA_CONSUMER_GROUP:smartstock-group}
       auto-offset-reset: earliest
       key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
-      value-deserializer: org.springframework.kafka.support.serializer.JsonDeserializer
+      value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
       properties:
         spring.json.trusted.packages: "com.smartstock.*"
+    listener:
+      ack-mode: manual_immediate
 
 # Security & JWT Configuration
 smartstock:
@@ -49,8 +51,25 @@ smartstock:
   kafka:
     topics:
       order-created: order.created.v1
+      order-created-dlt: order.created.v1.DLT
       inventory-reserved: inventory.reserved.v1
       inventory-released: inventory.released.v1
+  outbox:
+    publisher:
+      enabled: ${OUTBOX_PUBLISHER_ENABLED:true}
+      fixed-delay-ms: ${OUTBOX_PUBLISHER_FIXED_DELAY_MS:2000}
+      batch-size: ${OUTBOX_PUBLISHER_BATCH_SIZE:50}
+      send-timeout-seconds: ${OUTBOX_PUBLISHER_TIMEOUT_SECONDS:5}
+
+# Application Properties
+app:
+  admin-seed:
+    enabled: ${ADMIN_SEED_ENABLED:false}
+    name: ${ADMIN_NAME:}
+    email: ${ADMIN_EMAIL:}
+    password: ${ADMIN_PASSWORD:}
+  dev-data-seed:
+    enabled: ${DEV_DATA_SEED_ENABLED:false}
 
 # Logging Configuration
 logging:

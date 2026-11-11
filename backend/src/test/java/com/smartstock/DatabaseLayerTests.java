@@ -116,6 +116,8 @@ class DatabaseLayerTests {
         assertThat(savedInventory.getId()).isNotNull();
         // Calculated available = onHand - reserved (100 - 25 = 75)
         assertThat(savedInventory.getAvailable()).isEqualTo(75);
+        assertThat(inventoryRepository.existsByProductIdAndWarehouseId(savedProduct.getId(), savedWarehouse.getId())).isTrue();
+        assertThat(warehouseRepository.existsByName("Central Hub")).isTrue();
     }
 
     @Test

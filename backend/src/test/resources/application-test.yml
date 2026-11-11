@@ -1,4 +1,7 @@
 spring:
+  autoconfigure:
+    exclude:
+      - org.springframework.boot.autoconfigure.kafka.KafkaAutoConfiguration
   datasource:
     url: jdbc:h2:mem:testdb;MODE=MySQL;DATABASE_TO_LOWER=TRUE;DB_CLOSE_DELAY=-1;DB_CLOSE_ON_EXIT=FALSE
     driver-class-name: org.h2.Driver
@@ -13,13 +16,18 @@ spring:
         format_sql: false
   flyway:
     enabled: true
-  kafka:
-    bootstrap-servers: localhost:9092
-    listener:
-      auto-startup: false
 
 smartstock:
   jwt:
     # Test-only 256-bit secret used strictly for isolated automated unit and integration tests
     secret: 404E635266556A586E3272357538782F413F4428472B4B6250645367566B5970
     expiration-ms: 3600000
+  outbox:
+    publisher:
+      enabled: false
+
+app:
+  admin-seed:
+    enabled: false
+  dev-data-seed:
+    enabled: false

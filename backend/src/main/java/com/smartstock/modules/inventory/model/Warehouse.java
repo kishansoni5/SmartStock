@@ -4,6 +4,8 @@ import jakarta.persistence.*;
 import lombok.*;
 
 import java.time.LocalDateTime;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Objects;
 
 @Entity
@@ -27,6 +29,10 @@ public class Warehouse {
 
     @Column(name = "created_at", nullable = false, updatable = false)
     private LocalDateTime createdAt;
+
+    @OneToMany(mappedBy = "warehouse", fetch = FetchType.LAZY)
+    @Builder.Default
+    private List<Inventory> inventories = new ArrayList<>();
 
     @PrePersist
     protected void onCreate() {

@@ -12,6 +12,7 @@ desktop.ini
 
 # Tools and local binaries
 .tools/
+powershell.cmd
 
 # Environment Variables & Secrets
 .env
