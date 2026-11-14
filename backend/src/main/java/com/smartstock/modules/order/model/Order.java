@@ -1,6 +1,7 @@
 package com.smartstock.modules.order.model;
 
 import com.smartstock.modules.auth.model.AppUser;
+import com.smartstock.modules.auth.model.UserRole;
 import com.smartstock.modules.inventory.model.Warehouse;
 import jakarta.persistence.*;
 import lombok.*;
@@ -31,6 +32,10 @@ public class Order {
     @Enumerated(EnumType.STRING)
     @Column(nullable = false, length = 20)
     private OrderStatus status;
+
+    @Enumerated(EnumType.STRING)
+    @Column(name = "cancelled_by_role", length = 20)
+    private UserRole cancelledByRole;
 
     @Column(name = "total_amount", nullable = false, precision = 12, scale = 2)
     @Builder.Default

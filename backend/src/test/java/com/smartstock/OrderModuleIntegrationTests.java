@@ -509,11 +509,13 @@ class OrderModuleIntegrationTests {
                         .header("Authorization", "Bearer " + customer1Token))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.success", is(true)))
-                .andExpect(jsonPath("$.data.status", is("CANCELLED")));
+                .andExpect(jsonPath("$.data.status", is("CANCELLED")))
+                .andExpect(jsonPath("$.data.cancelledByRole", is("CUSTOMER")));
 
-        // Verify order in database is CANCELLED
+        // Verify order in database is CANCELLED and attributed to CUSTOMER
         Order cancelledOrder = orderRepository.findById(order.getId()).orElseThrow();
         assertThat(cancelledOrder.getStatus()).isEqualTo(OrderStatus.CANCELLED);
+        assertThat(cancelledOrder.getCancelledByRole()).isEqualTo(UserRole.CUSTOMER);
 
         // Verify stock was released in database (reserved went from 2 to 0)
         com.smartstock.modules.inventory.model.Inventory inv = inventoryRepository
@@ -568,7 +570,12 @@ class OrderModuleIntegrationTests {
                         .header("Authorization", "Bearer " + adminToken))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.success", is(true)))
-                .andExpect(jsonPath("$.data.status", is("CANCELLED")));
+                .andExpect(jsonPath("$.data.status", is("CANCELLED")))
+                .andExpect(jsonPath("$.data.cancelledByRole", is("ADMIN")));
+
+        Order cancelledOrder = orderRepository.findById(order.getId()).orElseThrow();
+        assertThat(cancelledOrder.getStatus()).isEqualTo(OrderStatus.CANCELLED);
+        assertThat(cancelledOrder.getCancelledByRole()).isEqualTo(UserRole.ADMIN);
     }
 
     @Test

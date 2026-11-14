@@ -1,5 +1,6 @@
 package com.smartstock.modules.order.dto;
 
+import com.smartstock.modules.auth.model.UserRole;
 import com.smartstock.modules.order.model.OrderStatus;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
@@ -21,6 +22,7 @@ public class OrderResponse {
     private String customerName;
     private String customerEmail;
     private OrderStatus status;
+    private UserRole cancelledByRole;
     private BigDecimal totalAmount;
     private Long warehouseId;
     private String warehouseName;

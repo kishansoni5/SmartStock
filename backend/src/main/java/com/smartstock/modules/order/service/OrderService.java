@@ -7,6 +7,7 @@ import com.smartstock.common.event.model.OutboxStatus;
 import com.smartstock.common.event.repository.OutboxEventRepository;
 import com.smartstock.common.exception.ResourceNotFoundException;
 import com.smartstock.modules.auth.model.AppUser;
+import com.smartstock.modules.auth.model.UserRole;
 import com.smartstock.modules.auth.repository.AppUserRepository;
 import com.smartstock.modules.inventory.model.Product;
 import com.smartstock.modules.inventory.model.Warehouse;
@@ -226,8 +227,9 @@ public class OrderService {
         }
 
         order.setStatus(OrderStatus.CANCELLED);
+        order.setCancelledByRole(isAdmin ? UserRole.ADMIN : UserRole.CUSTOMER);
         order = orderRepository.saveAndFlush(order);
-        log.info("Order ID {} successfully CANCELLED by user '{}'", orderId, userEmail);
+        log.info("Order ID {} successfully CANCELLED by user '{}' (role: {})", orderId, userEmail, order.getCancelledByRole());
 
         return mapToResponse(order);
     }
@@ -251,6 +253,7 @@ public class OrderService {
                 .customerName(order.getUser() != null ? order.getUser().getName() : null)
                 .customerEmail(order.getUser() != null ? order.getUser().getEmail() : null)
                 .status(order.getStatus())
+                .cancelledByRole(order.getCancelledByRole())
                 .totalAmount(order.getTotalAmount())
                 .warehouseId(order.getWarehouse() != null ? order.getWarehouse().getId() : null)
                 .warehouseName(order.getWarehouse() != null ? order.getWarehouse().getName() : null)
