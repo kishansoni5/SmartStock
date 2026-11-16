@@ -171,21 +171,24 @@ docker compose down -v
 The AWS deployment packages the entire application into production-grade Docker containers orchestrated by `docker compose`. Nginx is the only public-facing container, terminating HTTP/HTTPS and routing traffic between static files and the internal backend.
 
 ### 1. EC2 Instance Sizing & Prerequisites
-* **AMI:** Ubuntu Server 22.04 LTS or Amazon Linux 2023
-* **Instance Type:**
-  * **Recommended:** `t3.medium` (2 vCPU, 4 GB RAM)
-  * **Minimum:** `t3.small` (2 vCPU, 2 GB RAM) **with an active 2 GB swapfile**.
-  > [!CAUTION]
-  > Do NOT deploy on `t2.micro` or `t3.micro` (1 GB RAM). Running MySQL, Kafka KRaft, Spring Boot (JVM), and Nginx concurrently requires ~1.5 GB RAM. Without sufficient memory, the Linux OOM killer will terminate the database or Kafka broker.
-* **Storage:** 20 GB+ gp3 EBS volume.
+* **Cloud Region:** AWS Asia Pacific (Mumbai) `ap-south-1`
+* **AMI:** Ubuntu Server 24.04 LTS (or modern Ubuntu on EC2)
+* **Instance Type:** `m7i-flex.large` (2 vCPU, 8 GB RAM)
+* **Storage:** 30 GB+ gp3 EBS volume.
+* **Protocol & Encryption Status:** 
+  > [!IMPORTANT]
+  > The live application currently operates over **plain HTTP (Port 80)**. HTTPS is **not currently configured**. Port 443 is prepared in Nginx and Docker Compose but remains commented out pending custom domain and SSL/TLS certificate provisioning.
+* **Backup Status:**
+  > [!NOTE]
+  > Automated backups (such as AWS DLM snapshot lifecycle policies or automated S3 sync) are **not currently configured**. Backups are executed via manual `mysqldump` procedures.
 * **Security Group Configuration:**
   | Type | Port | Source | Purpose |
   | :--- | :--- | :--- | :--- |
   | SSH | 22 | Your Administrator IP | Remote management |
-  | HTTP | 80 | `0.0.0.0/0` | Public Web traffic / Certbot |
-  | HTTPS | 443 | `0.0.0.0/0` | Public Secure Web traffic |
+  | HTTP | 80 | `0.0.0.0/0` | Public Web traffic & API reverse proxy |
+  | HTTPS | 443 | `0.0.0.0/0` | Prepared for future SSL termination |
   > [!IMPORTANT]
-  > Do **NOT** open ports 3306, 3307, 8080, 8081, 9092, or 29092 in the AWS Security Group. All inter-service communication is confined inside the Docker bridge network.
+  > Do **NOT** open ports 3306, 3307, 8080, 8081, 9092, or 29092 in the AWS Security Group. All inter-service communication is confined inside the Docker bridge network (`smartstock-prod-network`).
 
 ### 2. EC2 Host Preparation
 
@@ -267,15 +270,55 @@ The production Nginx container (`infrastructure/aws/nginx/default.conf`) acts as
 * Client-side SPA routing is handled via `try_files $uri $uri/ /index.html;`, ensuring bookmarking and deep linking function without HTTP 404 errors.
 * Asset caching headers are enforced: 1-year immutable caching for fingerprinted assets (`.js`, `.css`, `.svg`) and `no-cache` for `index.html`.
 
-### 5. Persistent Volumes
+### 5. Persistent Volumes vs. Ephemeral Containers
 
-Production data is stored in named Docker volumes mapped to the EC2 host's Docker directory (`/var/lib/docker/volumes`):
-* `mysql_prod_data`: Stores all MySQL transactional data, Flyway migration state, and table tablespaces.
+Production data is stored in named Docker volumes mapped to the EC2 host filesystem under `/var/lib/docker/volumes`:
+* `mysql_prod_data`: Stores all MySQL transactional data, Flyway migration state, and table tablespaces at `/var/lib/mysql`.
 * `kafka_prod_data`: Stores Kafka topic partition logs, consumer offsets, and transaction state logs at `/var/lib/kafka/data`.
 
-Containers can be stopped, upgraded, or rebuilt without data loss.
+**Key Architectural Distinction:**
+* **Containers are Ephemeral:** Stopping, removing, or rebuilding a container (`docker compose up -d --build`) discards all ephemeral container layers.
+* **Volumes are Persistent:** Named volumes persist across container updates, redeployments, and host restarts. Running `docker compose down` safely stops and removes containers without affecting volume data.
+> [!CAUTION]
+> Never execute `docker compose down -v` in production. The `-v` flag deletes all attached persistent volumes, resulting in irreversible data loss.
 
-### 6. Production Kafka Considerations (Single Broker vs. MSK)
+### 6. Safe Shutdown & Restart Procedures
+
+* **Graceful Stack Stop:**
+  ```bash
+  cd infrastructure/aws
+  docker compose stop
+  ```
+* **Restart the Stopped Stack:**
+  ```bash
+  docker compose start
+  ```
+* **Tear Down Containers (Safely Preserving Volumes):**
+  ```bash
+  docker compose down
+  ```
+* **Restart a Specific Service (e.g., Backend after updating .env):**
+  ```bash
+  docker compose restart backend
+  ```
+* **Zero-Downtime Redeployment After Code Pull:**
+  ```bash
+  git pull origin main
+  docker compose up -d --build
+  ```
+
+### 7. Public IP Changes on EC2 Restart
+
+> [!WARNING]
+> Standard AWS EC2 instances operate with dynamic public IPv4 addresses. If the EC2 instance is **stopped and started** from the AWS Management Console:
+> 1. AWS releases the previous public IPv4 address back to the pool and allocates a **new public IPv4 address**.
+> 2. Any client or SSH connection referencing the old IP will fail.
+> 
+> **Mitigation:**
+> * To maintain a permanent static IP address across instance reboots, allocate an **AWS Elastic IP (EIP)** and associate it with the EC2 instance.
+> * Alternatively, configure a DNS record (e.g. AWS Route 53 or Cloudflare) pointing to the instance and update the record when necessary.
+
+### 8. Production Kafka Considerations (Single Broker vs. MSK)
 
 > [!WARNING]
 > The current AWS configuration runs an Apache Kafka 3.8.0 KRaft broker in a single container. Be aware of the following production limitations:
@@ -283,11 +326,12 @@ Containers can be stopped, upgraded, or rebuilt without data loss.
 > 2. **Replication Factor = 1:** Offsets and messages are stored with 1 replica (`min.insync.replicas=1`). Producer `acks=all` guarantees acknowledgment from this single broker only.
 > 3. **Production Roadmap:** For critical multi-AZ production environments with strict zero-data-loss SLAs, replace the self-hosted Kafka container with **AWS MSK (Amazon Managed Streaming for Apache Kafka)** and point `KAFKA_BOOTSTRAP_SERVERS` to the MSK bootstrap endpoint.
 
-### 7. Enabling Domain Name & HTTPS (SSL/TLS)
+### 9. Future Domain & HTTPS Configuration (Prepared, Not Currently Active)
 
-To secure the deployment with a free Let's Encrypt SSL certificate:
+> [!IMPORTANT]
+> The application currently serves traffic strictly over **HTTP (Port 80)**. HTTPS is **not currently configured**. To enable SSL/TLS encryption in the future:
 
-1. Map your domain DNS `A` record (e.g. `smartstock.example.com`) to your EC2 Public IPv4.
+1. Map your domain DNS `A` record (e.g. `smartstock.example.com`) to your EC2 Public IPv4 or Elastic IP.
 2. Install Certbot on the EC2 host:
    ```bash
    sudo apt-get install -y certbot python3-certbot-nginx
@@ -311,7 +355,7 @@ To secure the deployment with a free Let's Encrypt SSL certificate:
    docker compose restart nginx
    ```
 
-### 8. Logs & Troubleshooting
+### 10. Logs & Troubleshooting
 
 View live consolidated logs:
 ```bash
@@ -336,24 +380,24 @@ Verify backend health endpoint internally:
 docker compose exec backend curl -f http://localhost:8080/api/v1/actuator/health
 ```
 
-### 9. Database Backup & Disaster Recovery
+### 11. Database Backup & Disaster Recovery
 
-#### Automated MySQL Dump:
+> [!NOTE]
+> Automated backup mechanisms (such as AWS DLM snapshot lifecycle policies or automated S3 sync) are **not currently configured**. All backups are executed manually via the procedures below.
+
+#### Manual Database Export:
 ```bash
-# Create backup directory
+# Create local backup directory on EC2 host
 mkdir -p ~/backups
 
-# Export database
+# Export database via container
 docker compose exec -T mysql mysqldump -u smartstock_user -p$(grep DB_PASSWORD .env | cut -d '=' -f2) smartstock > ~/backups/smartstock_$(date +%Y%m%d_%H%M%S).sql
 
 # Compress backup
 gzip ~/backups/smartstock_*.sql
 ```
 
-#### Restoring from Backup:
+#### Restoring from Manual Backup:
 ```bash
 gunzip < ~/backups/smartstock_backup.sql.gz | docker compose exec -T mysql mysql -u smartstock_user -p$(grep DB_PASSWORD .env | cut -d '=' -f2) smartstock
 ```
-
-#### EBS Snapshots:
-For full disaster recovery, configure an **AWS Data Lifecycle Manager (DLM)** policy to take automated daily EBS snapshots of the EC2 instance root and data volumes.
