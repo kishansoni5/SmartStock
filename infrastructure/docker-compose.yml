@@ -1,3 +1,10 @@
+# ==============================================================================
+# SmartStock - Infrastructure (Root Compose / Backward-Compatible Local Dev)
+# Note: For canonical environment-specific configurations, see:
+#   - infrastructure/local/docker-compose.yml (Local developer workstation)
+#   - infrastructure/aws/docker-compose.yml   (AWS EC2 production stack)
+# ==============================================================================
+
 services:
   # MySQL Database Service
   mysql:
@@ -44,8 +51,15 @@ services:
       KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
       KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
       KAFKA_NUM_PARTITIONS: 3
+      KAFKA_LOG_DIRS: "/var/lib/kafka/data"
     volumes:
       - kafka_data:/var/lib/kafka/data
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
     networks:
       - smartstock-network
 
@@ -60,12 +74,14 @@ services:
       KAFKA_CLUSTERS_0_NAME: smartstock-cluster
       KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:29092
     depends_on:
-      - kafka
+      kafka:
+        condition: service_healthy
     networks:
       - smartstock-network
 
 networks:
   smartstock-network:
+    name: smartstock-network
     driver: bridge
 
 volumes:

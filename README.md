@@ -149,7 +149,13 @@ All endpoints are prefixed with `/api/v1`.
 
 ## ⚙️ Getting Started & Setup Guide
 
-### 1. Prerequisites
+SmartStock maintains two streamlined deployment configurations for the **same codebase**:
+* **Local Development:** Inner-loop developer workstation with hot-reload and containerized MySQL + Kafka.
+* **AWS EC2 Production:** Fully containerized stack with Nginx public ingress, private internal services, and persistent volumes.
+
+For complete production architecture, EC2 sizing, SSL/TLS setup, and disaster recovery, refer to the [Deployment Guide](docs/deployment-guide.md).
+
+### 1. Prerequisites (Local Development)
 - **Java Development Kit (JDK):** Version 17 or higher
 - **Apache Maven:** Version 3.8+
 - **Node.js:** Version 18+ & npm
@@ -157,22 +163,23 @@ All endpoints are prefixed with `/api/v1`.
 
 ---
 
-### 2. Step 1: Start Infrastructure (MySQL & Kafka)
+### 2. Step 1: Start Local Infrastructure (MySQL & Kafka)
 
-Navigate to the `infrastructure/` directory:
+Navigate to the `infrastructure/local/` directory:
 
 ```bash
-cd infrastructure
+cd infrastructure/local
 
-# Copy the environment file
+# Copy the local environment file
 cp .env.example .env
 
 # Start MySQL, Kafka (KRaft mode), and Kafka UI
 docker compose up -d
 ```
+*(Backward compatibility note: Running `docker compose up -d` directly inside `infrastructure/` also remains fully supported).*
 
 Verify services:
-- **MySQL 8.0:** Listening on port `3306` (or `3307` depending on `.env`)
+- **MySQL 8.0:** Listening on port `3307` (or `3306` if configured)
 - **Apache Kafka (KRaft):** Listening on port `9092`
 - **Kafka Web UI:** Open [http://localhost:8085](http://localhost:8085) to view topics and partition offsets.
 
@@ -183,7 +190,7 @@ Verify services:
 Navigate to `backend/`:
 
 ```bash
-cd ../backend
+cd ../../backend
 
 # Copy backend environment template
 cp .env.example .env
@@ -191,9 +198,9 @@ cp .env.example .env
 
 Review or edit `backend/.env` as needed:
 ```dotenv
-SERVER_PORT=8080
+SERVER_PORT=8081
 DB_HOST=localhost
-DB_PORT=3306
+DB_PORT=3307
 DB_NAME=smartstock
 DB_USERNAME=smartstock_user
 DB_PASSWORD=smartstock_pass
@@ -212,7 +219,7 @@ Compile and run the Spring Boot application:
 mvn clean spring-boot:run
 ```
 
-The backend starts at **`http://localhost:8080/api/v1`**. Flyway automatically executes database migrations on startup.
+The backend starts at **`http://localhost:8081/api/v1`**. Flyway automatically executes database migrations on startup. Health check is available at `http://localhost:8081/api/v1/actuator/health`.
 
 ---
 
@@ -234,6 +241,30 @@ npm run dev
 ```
 
 Open [http://localhost:5173](http://localhost:5173) in your browser.
+
+---
+
+### 5. AWS EC2 Production Deployment (Quick Reference)
+
+On your EC2 instance (Ubuntu 22.04 LTS / t3.medium recommended):
+
+```bash
+# 1. Clone repository
+git clone https://github.com/kishansoni5/SmartStock.git
+cd SmartStock/infrastructure/aws
+
+# 2. Configure production secrets
+cp .env.example .env
+chmod 600 .env
+nano .env  # Supply strong passwords and JWT secret
+
+# 3. Launch production stack (Nginx, Backend, MySQL, Kafka)
+docker compose up -d --build
+
+# 4. Verify healthy status
+docker compose ps
+```
+The application will be accessible via HTTP on port `80` (and HTTPS on port `443` once SSL is configured). See [Deployment Guide](docs/deployment-guide.md) for full instructions.
 
 ---
 
